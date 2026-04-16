@@ -1,0 +1,57 @@
+x-common-variables: &common-vars
+  COMMIT_HASH: e7a3953084a7050ca349010deb22546834c2e196
+
+services:
+  kernel-config:
+    build:
+      context: .
+    image: rpi-toolchain
+    container_name: kernel-config
+    environment: *common-vars
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./conf:/conf
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        mkdir -p /build/linux-rpi
+        cd /build/linux-rpi
+        git init
+        git remote add origin https://github.com/raspberrypi/linux.git
+        git fetch --depth 1 origin "${COMMIT_HASH}"
+        git checkout FETCH_HEAD
+        export ARCH=arm64
+        export LLVM=1
+        if [ "$(uname -m)" = "x86_64" ]; then
+            export CROSS_COMPILE=aarch64-linux-gnu-
+        fi
+        make bcm2712_defconfig
+        make menuconfig
+        sudo cp *.config /conf/
+
+  kernel-builder:
+    build:
+      context: .
+    image: rpi-toolchain
+    container_name: kernel-builder
+    environment: *common-vars
+    volumes:
+      - ./out:/out
+      - ./conf/.config:/tmp/.config:ro
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        mkdir -p /build/linux-rpi
+        cd /build/linux-rpi
+        git init
+        git remote add origin https://github.com/raspberrypi/linux.git
+        git fetch --depth 1 origin "${COMMIT_HASH}"
+        git checkout FETCH_HEAD
+        cp /tmp/.config .config
+        make -j$(nproc) bindeb-pkg KCFLAGS="-mcpu=native"
+        sudo cp -v /build/*.deb /out/
