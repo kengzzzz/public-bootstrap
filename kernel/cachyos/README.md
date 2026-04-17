@@ -1,3 +1,5 @@
+![](fastfetch.png)
+
 # Create Config
 
 - `docker compose run --rm kernel-config`
