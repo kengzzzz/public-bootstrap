@@ -12,6 +12,8 @@ services:
     tty: true
     volumes:
       - ./conf:/conf
+    tmpfs:
+      - /build:rw,exec,size=10G,mode=1777
     command:
       - bash
       - -c
@@ -38,11 +40,14 @@ services:
     volumes:
       - ./out:/out
       - ./conf/.config:/tmp/.config:ro
+    tmpfs:
+      - /build:rw,exec,size=10G,mode=1777
     command:
       - bash
       - -c
       - |
         set -euo pipefail
+        sudo chown -R $(id -u):$(id -g) /out
         mkdir -p /build/linux-rpi
         cd /build/linux-rpi
         git init
