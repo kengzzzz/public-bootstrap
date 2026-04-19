@@ -1,15 +1,9 @@
-x-common-variables: &common-vars
-  COMMIT_HASH: 4224303b6d7a50dd1cc3ffa78864050cc9536eec
-
 services:
   kernel-config:
     build:
       context: .
     image: cachyos-toolchain
     container_name: kernel-config
-    environment: *common-vars
-    stdin_open: true
-    tty: true
     volumes:
       - ./conf:/conf
     tmpfs:
@@ -19,32 +13,27 @@ services:
       - -c
       - |
         set -euo pipefail
-        export BUILDDIR=/build
         mkdir -p /build/linux-cachyos
-        cd /build/linux-cachyos
-        git init
-        git remote add origin https://github.com/CachyOS/linux-cachyos.git
-        git fetch --depth 1 origin "${COMMIT_HASH}"
-        git checkout FETCH_HEAD
-        cd linux-cachyos-bore
-        sed -i 's/_use_llvm_lto:=[^}]*/_use_llvm_lto:=full/' PKGBUILD
-        updpkgsums
-        makepkg -o
-        cd /build/linux-cachyos-bore-lto/src/cachyos-*/
-        cp /build/linux-cachyos/linux-cachyos-bore/config-*-cachyos-bore-lto .config
-        LLVM=1 make menuconfig
-        sudo cp *.config /conf/
+        cp -a /src/. /build/linux-cachyos/
+        cd /build/linux-cachyos/linux-cachyos-bore
+        chown -R builder:builder /conf /build
+        su builder -c "
+          updpkgsums
+          makepkg -o
+          cd /build/linux-cachyos-bore-lto/src/cachyos-*/
+          cp /build/linux-cachyos/linux-cachyos-bore/config-*-cachyos-bore-lto .config
+          make menuconfig
+          cp .config /conf/
+        "
 
   kernel-builder:
     build:
       context: .
     image: cachyos-toolchain
     container_name: kernel-builder
-    environment: *common-vars
     volumes:
       - ./out:/out
       - ./conf/.config:/tmp/.config:ro
-      - /etc/makepkg.conf:/etc/makepkg.conf:ro
     tmpfs:
       - /build:rw,exec,size=48G,mode=1777
     command:
@@ -52,16 +41,13 @@ services:
       - -c
       - |
         set -euo pipefail
-        export BUILDDIR=/build
         mkdir -p /build/linux-cachyos
-        cd /build/linux-cachyos
-        git init
-        git remote add origin https://github.com/CachyOS/linux-cachyos.git
-        git fetch --depth 1 origin "${COMMIT_HASH}"
-        git checkout FETCH_HEAD
-        cd linux-cachyos-bore
+        cp -a /src/. /build/linux-cachyos/
+        cd /build/linux-cachyos/linux-cachyos-bore
         cp /tmp/.config config
-        sed -i 's/_use_llvm_lto:=[^}]*/_use_llvm_lto:=full/' PKGBUILD
-        updpkgsums
-        makepkg -s --noconfirm --skippgpcheck
-        sudo cp -v *.pkg.tar.zst /out/
+        chown -R builder:builder /out /build
+        su builder -c "
+          updpkgsums
+          makepkg -s --noconfirm --skippgpcheck
+          cp -v *.pkg.tar.zst /out/"
+        "
