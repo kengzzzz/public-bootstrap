@@ -1,17 +1,14 @@
 x-common-variables: &common-vars
-  COMMIT_HASH: e7a3953084a7050ca349010deb22546834c2e196
   ARCH: arm64
 
 services:
   kernel-config:
-    platform: "linux/amd64"
+    platform: "linux/arm64"
     build:
       context: .
     image: rpi-toolchain
     container_name: kernel-config
     environment: *common-vars
-    stdin_open: true
-    tty: true
     volumes:
       - ./conf:/conf
     tmpfs:
@@ -21,20 +18,18 @@ services:
       - -c
       - |
         set -euo pipefail
-        mkdir -p /build/linux-rpi
-        cd /build/linux-rpi
-        git init
-        git remote add origin https://github.com/raspberrypi/linux.git
-        git fetch --depth 1 origin "${COMMIT_HASH}"
-        git checkout FETCH_HEAD
-        export LLVM=1
-        export KERNEL=kernel_2712
-        make bcm2712_defconfig
-        make menuconfig
-        sudo cp .config /conf/.config
+        chown -R builder:builder /conf
+        su builder -c "
+          mkdir -p /build/linux-rpi
+          cp -a /src/. /build/linux-rpi/
+          cd /build/linux-rpi
+          make bcm2712_defconfig
+          make menuconfig
+          cp .config /conf/.config
+        "
 
   kernel-builder:
-    platform: "linux/amd64"
+    platform: "linux/arm64"
     build:
       context: .
     image: rpi-toolchain
@@ -50,20 +45,16 @@ services:
       - -c
       - |
         set -euo pipefail
-        sudo chown -R $(id -u):$(id -g) /out
-        mkdir -p /build/linux-rpi
-        cd /build/linux-rpi
-        git init
-        git remote add origin https://github.com/raspberrypi/linux.git
-        git fetch --depth 1 origin "${COMMIT_HASH}"
-        git checkout FETCH_HEAD
-        cp /tmp/.config .config
-        export LLVM=1
-        export KERNEL=kernel_2712
-        make -j$(nproc) Image.gz modules dtbs KCFLAGS="-mcpu=native"
-        make -j$(nproc) INSTALL_MOD_PATH=/out modules_install
-        sudo mkdir -p /out/overlays
-        sudo cp arch/arm64/boot/Image /out/kernel_2712.img
-        sudo cp arch/arm64/boot/dts/broadcom/*.dtb /out/
-        sudo cp arch/arm64/boot/dts/overlays/*.dtbo /out/overlays/
-        sudo cp arch/arm64/boot/dts/overlays/README /out/overlays/
+        chown -R builder:builder /out /build
+        su builder -c "
+          mkdir -p /build/linux-rpi /out/overlays
+          cp -a /src/. /build/linux-rpi/
+          cd /build/linux-rpi
+          cp /tmp/.config .config
+          make -j$(nproc) Image.gz modules dtbs KCFLAGS='-mcpu=native'
+          make -j$(nproc) INSTALL_MOD_PATH=/out modules_install
+          cp arch/arm64/boot/Image /out/kernel_2712.img
+          cp arch/arm64/boot/dts/broadcom/*.dtb /out/
+          cp arch/arm64/boot/dts/overlays/*.dtbo /out/overlays/
+          cp arch/arm64/boot/dts/overlays/README /out/overlays/
+        "
