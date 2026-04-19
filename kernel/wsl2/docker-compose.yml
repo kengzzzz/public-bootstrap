@@ -1,0 +1,47 @@
+services:
+  kernel-config:
+    build:
+      context: .
+    image: wsl2-toolchain
+    container_name: kernel-config
+    volumes:
+      - ./conf:/conf
+    tmpfs:
+      - /build:rw,exec,size=32G,mode=1777
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        sudo chown -R $(id -u):$(id -g) /conf
+        mkdir -p /build/linux-wsl2
+        cp -r /src/* /build/linux-wsl2/
+        cd /build/linux-wsl2/
+        cp Microsoft/config-wsl .config
+        make menuconfig
+        cp .config /conf/.config
+
+  kernel-builder:
+    build:
+      context: .
+    image: wsl2-toolchain
+    container_name: kernel-builder
+    volumes:
+      - ./out:/out
+      - ./conf/.config:/tmp/.config:ro
+    tmpfs:
+      - /build:rw,exec,size=32G,mode=1777
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        sudo chown -R $(id -u):$(id -g) /out
+        mkdir -p /build/linux-wsl2 /out/modules
+        cp -r /src/* /build/linux-wsl2/
+        cd /build/linux-wsl2/
+        cp /tmp/.config .config
+        KCFLAGS="-march=native"
+        make -j$(nproc) KCONFIG_CONFIG=.config vmlinux modules
+        make KCONFIG_CONFIG=.config INSTALL_MOD_PATH=/out/modules modules_install
+        cp /build/linux-wsl2/vmlinux /out/vmlinux
