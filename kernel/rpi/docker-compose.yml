@@ -1,8 +1,10 @@
 x-common-variables: &common-vars
   COMMIT_HASH: e7a3953084a7050ca349010deb22546834c2e196
+  ARCH: arm64
 
 services:
   kernel-config:
+    platform: "linux/amd64"
     build:
       context: .
     image: rpi-toolchain
@@ -13,7 +15,7 @@ services:
     volumes:
       - ./conf:/conf
     tmpfs:
-      - /build:rw,exec,size=10G,mode=1777
+      - /build:rw,exec,size=12G,mode=1777
     command:
       - bash
       - -c
@@ -32,6 +34,7 @@ services:
         sudo cp .config /conf/.config
 
   kernel-builder:
+    platform: "linux/amd64"
     build:
       context: .
     image: rpi-toolchain
@@ -41,7 +44,7 @@ services:
       - ./out:/out
       - ./conf/.config:/tmp/.config:ro
     tmpfs:
-      - /build:rw,exec,size=10G,mode=1777
+      - /build:rw,exec,size=12G,mode=1777
     command:
       - bash
       - -c
