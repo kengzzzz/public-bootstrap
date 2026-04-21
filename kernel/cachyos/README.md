@@ -14,4 +14,4 @@
 
 # Installation
 
-- `sudo pacman -U --overwrite '*' ~/dotfiles/utils/kernel/out/linux-cachyos-bore-lto*.pkg.tar.zst`
+- `sudo pacman -U --overwrite '*' ./out/linux-cachyos-bore-lto*.pkg.tar.zst`
