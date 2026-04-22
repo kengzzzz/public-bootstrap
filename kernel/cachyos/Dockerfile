@@ -28,7 +28,8 @@ RUN git init && \
     git fetch --depth 1 origin "${COMMIT_HASH}" && \
     git checkout FETCH_HEAD && \
     cd linux-cachyos-bore && \
-    sed -i 's/_use_llvm_lto:=[^}]*/_use_llvm_lto:=full/' PKGBUILD
+    sed -i 's/_use_llvm_lto:=[^}]*/_use_llvm_lto:=full/' PKGBUILD && \
+    sed -i 's/_build_nvidia_open:=[^}]*/_build_nvidia_open:=yes/' PKGBUILD
 
 ENV LLVM=1 \
     BUILDDIR=/build

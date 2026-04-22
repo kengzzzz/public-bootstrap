@@ -7,7 +7,7 @@ services:
     volumes:
       - ./conf:/conf
     tmpfs:
-      - /build:rw,exec,size=48G,mode=1777
+      - /build:rw,exec,size=64G,mode=1777
     command:
       - bash
       - -c
@@ -35,7 +35,7 @@ services:
       - ./out:/out
       - ./conf/.config:/tmp/.config:ro
     tmpfs:
-      - /build:rw,exec,size=48G,mode=1777
+      - /build:rw,exec,size=64G,mode=1777
     command:
       - bash
       - -c
@@ -49,5 +49,5 @@ services:
         su builder -c "
           updpkgsums
           makepkg -s --noconfirm --skippgpcheck
-          cp -v *.pkg.tar.zst /out/"
+          cp -v *.pkg.tar.zst /out/
         "
