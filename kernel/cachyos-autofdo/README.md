@@ -44,7 +44,7 @@
 ### Host
 
 - `mkdir extract_dbg`
-- `tar --use-compress-program=zstd -xvf linux-cachyos-dbg-*.pkg.tar.zst -C extract_dbg`
+- `tar --use-compress-program=zstd -xvf out/linux-cachyos-dbg-*.pkg.tar.zst -C extract_dbg`
 
 
 ### Container
