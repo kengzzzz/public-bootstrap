@@ -1,3 +1,8 @@
+> [!CAUTION]
+> **WARNING: EXPERIMENTAL BUILD**
+>
+> This project is for development and testing purposes only. The resulting builds are considered unstable and may cause issues.
+
 # Create Config(Optional)
 
 - `docker compose run --rm kernel-config`
