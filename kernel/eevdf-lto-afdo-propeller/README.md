@@ -14,12 +14,12 @@
 
 - `sudo sh -c "echo 0 > /proc/sys/kernel/kptr_restrict"`
 - `sudo sh -c "echo 0 > /proc/sys/kernel/perf_event_paranoid"`
-- `docker compose build autofdo-collector`
+- `docker compose build autofdo`
 
 # Workload AutoFDO
 
 - burn your CPU around 20 mins
-- **while burning** run `docker compose run --rm autofdo-collector`
+- **while burning** run `docker compose run --rm autofdo`
 
 # Compile Propeller Kernel
 
@@ -35,12 +35,12 @@
 
 - `sudo sh -c "echo 0 > /proc/sys/kernel/kptr_restrict"`
 - `sudo sh -c "echo 0 > /proc/sys/kernel/perf_event_paranoid"`
-- `docker compose build propeller-collector`
+- `docker compose build propeller`
 
 # Workload Propeller
 
 - burn your CPU around 20 mins
-- **while burning** run `docker compose run --rm propeller-collector`
+- **while burning** run `docker compose run --rm propeller`
 
 # Create Config
 
