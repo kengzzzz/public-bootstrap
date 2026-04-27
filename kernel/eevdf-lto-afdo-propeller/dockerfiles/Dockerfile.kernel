@@ -15,7 +15,9 @@ RUN pacman -Syy --noconfirm --needed curl git && \
     
 FROM cachyos-base
 
-ARG COMMIT_HASH
+ARG KERNEL_COMMIT_HASH FLAVOR
+
+ARG PATCH_FILE="${FLAVOR}.patch"
 
 RUN pacman -Syyu --noconfirm --needed \
     base-devel sudo wget bc cpio pahole xmlto kmod libelf python-sphinx pacman-contrib \
@@ -30,10 +32,11 @@ WORKDIR /src
 
 RUN git init && \
     git remote add origin https://github.com/CachyOS/linux-cachyos.git && \
-    git fetch --depth 1 origin "${COMMIT_HASH}" && \
-    git checkout FETCH_HEAD && \
-    cd linux-cachyos && \
-    sed -i 's/_use_llvm_lto:=[^}]*/_use_llvm_lto:=thin/' PKGBUILD && \
-    sed -i 's/_build_nvidia_open:=[^}]*/_build_nvidia_open:=yes/' PKGBUILD && \
-    sed -i 's/_build_debug:=[^}]*/_build_debug:=yes/' PKGBUILD && \
-    sed -i 's/_autofdo:=[^}]*/_autofdo:=yes/' PKGBUILD
+    git fetch --depth 1 origin "${KERNEL_COMMIT_HASH}" && \
+    git checkout FETCH_HEAD
+
+COPY patches/${PATCH_FILE} linux-cachyos/pkgbuild.patch
+
+COPY profiles/* linux-cachyos/
+
+RUN cd linux-cachyos && patch PKGBUILD < pkgbuild.patch

@@ -1,12 +1,18 @@
+x-common-build-args: &common-build-args
+  ARCH_IMAGE_DIGEST: sha256:5ba8bb318666baef4d33afefc0e65db80f38b23503cb8e7b150d315cc2d4d5da
+  UBUNTU_IMAGE_DIGEST: sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+  KERNEL_COMMIT_HASH: 1c61dfd1c3ad7762faa0db8b06c6af6c59cc4340
+  PROPELLER_COMMIT_HASH: e7a831e46e8822f00d0fb9082486745c62748a7e
+
 services:
   kernel-autofdo:
     build:
       context: .
-      dockerfile: Dockerfile.autofdo
+      dockerfile: dockerfiles/Dockerfile.kernel
       args:
-        - ARCH_IMAGE_DIGEST=sha256:5ba8bb318666baef4d33afefc0e65db80f38b23503cb8e7b150d315cc2d4d5da
-        - COMMIT_HASH=1c61dfd1c3ad7762faa0db8b06c6af6c59cc4340
-    image: cachyos-autofdo
+        <<: *common-build-args
+        FLAVOR: autofdo
+    image: kernel-autofdo
     container_name: kernel-autofdo
     volumes:
       - ./out:/out
@@ -24,27 +30,24 @@ services:
         su builder -c "
           updpkgsums
           makepkg -o
-          cd /build/linux-cachyos/src/cachyos-*/
           cp /build/linux-cachyos/linux-cachyos/config-*-cachyos config
           updpkgsums
           makepkg -s --noconfirm --skippgpcheck
           cp -v *.pkg.tar.zst /out/autofdo/
         "
 
-  autofdo-collector:
+  autofdo:
     build:
       context: .
-      dockerfile: Dockerfile.autofdo-collector
+      dockerfile: dockerfiles/Dockerfile.autofdo
       args:
-        - UBUNTU_IMAGE_DIGEST=sha256:962f6cadeae0ea6284001009daa4cc9a8c37e75d1f5191cf0eb83fe565b63dd7
-        - ARCH_IMAGE_DIGEST=sha256:5ba8bb318666baef4d33afefc0e65db80f38b23503cb8e7b150d315cc2d4d5da
-        - COMMIT_HASH=da0cc638312959442a8ebb8eb9f9ddcf93e26e5a
-    image: cachyos-autofdo-collector
-    container_name: kernel-autofdo-collector
+        <<: *common-build-args
+    image: autofdo
+    container_name: autofdo
     privileged: true
     pid: "host"
     volumes:
-      - ./conf:/conf
+      - ./profiles:/profiles
       - ./out:/out
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
@@ -54,20 +57,19 @@ services:
       - |
         set -euo pipefail
         cd /build
+        perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009 -o kernel.data sleep 1200
         mkdir -p extract_dbg
         tar --use-compress-program=zstd -xvf /out/autofdo/linux-cachyos-dbg-*.pkg.tar.zst -C extract_dbg
-        VMLINUX_PATH=$$(find extract_dbg -name "vmlinux" | head -n 1)
-        perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009 --vmlinux="$$VMLINUX_PATH" -o kernel.data sleep 1200
-        create_llvm_prof --binary="$$VMLINUX_PATH" --profile=kernel.data --format=extbinary --out=/conf/kernel.afdo
+        llvm-profgen --kernel --binary=extract_dbg/usr/src/debug/linux-cachyos/vmlinux --perfdata=kernel.data -o /profiles/kernel.afdo
 
   kernel-propeller:
     build:
       context: .
-      dockerfile: Dockerfile.propeller
+      dockerfile: dockerfiles/Dockerfile.kernel
       args:
-        - ARCH_IMAGE_DIGEST=sha256:5ba8bb318666baef4d33afefc0e65db80f38b23503cb8e7b150d315cc2d4d5da
-        - COMMIT_HASH=1c61dfd1c3ad7762faa0db8b06c6af6c59cc4340
-    image: cachyos-propeller
+        <<: *common-build-args
+        FLAVOR: propeller
+    image: kernel-propeller
     container_name: kernel-propeller
     volumes:
       - ./out:/out
@@ -85,27 +87,24 @@ services:
         su builder -c "
           updpkgsums
           makepkg -o
-          cd /build/linux-cachyos/src/cachyos-*/
           cp /build/linux-cachyos/linux-cachyos/config-*-cachyos config
           updpkgsums
           makepkg -s --noconfirm --skippgpcheck
           cp -v *.pkg.tar.zst /out/propeller/
         "
 
-  propeller-collector:
+  propeller:
     build:
       context: .
-      dockerfile: Dockerfile.propeller-collector
+      dockerfile: dockerfiles/Dockerfile.propeller
       args:
-        - UBUNTU_IMAGE_DIGEST=sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
-        - ARCH_IMAGE_DIGEST=sha256:5ba8bb318666baef4d33afefc0e65db80f38b23503cb8e7b150d315cc2d4d5da
-        - COMMIT_HASH=e7a831e46e8822f00d0fb9082486745c62748a7e
-    image: cachyos-propeller-collector
-    container_name: kernel-propeller-collector
+        <<: *common-build-args
+    image: propeller
+    container_name: propeller
     privileged: true
     pid: "host"
     volumes:
-      - ./conf:/conf
+      - ./profiles:/profiles
       - ./out:/out
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
@@ -115,23 +114,22 @@ services:
       - |
         set -euo pipefail
         cd /build
+        perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009 -o kernel.data sleep 1200
         mkdir -p extract_dbg
-        tar --use-compress-program=zstd -xvf /out/propeller/linux-cachyos-dbg-*.pkg.tar.zst -C extract_dbg
-        VMLINUX_PATH=$$(find extract_dbg -name "vmlinux" | head -n 1)
-        perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009 --vmlinux="$$VMLINUX_PATH" -o propeller.data sleep 1200
-        generate_propeller_profiles --binary="$$VMLINUX_PATH" --profile=propeller.data --cc_profile=/conf/propeller_cc_profile.txt --ld_profile=/conf/propeller_ld_profile.txt
+        tar --use-compress-program=zstd -xvf /out/autofdo/linux-cachyos-dbg-*.pkg.tar.zst -C extract_dbg
+        generate_propeller_profiles --binary=extract_dbg/usr/src/debug/linux-cachyos/vmlinux --profile=kernel.data --cc_profile=/profiles/propeller_cc_profile.txt --ld_profile=/profiles/propeller_ld_profile.txt        
 
   kernel-config:
     build:
       context: .
-      dockerfile: Dockerfile.cachyos
+      dockerfile: dockerfiles/Dockerfile.kernel
       args:
-        - ARCH_IMAGE_DIGEST=sha256:5ba8bb318666baef4d33afefc0e65db80f38b23503cb8e7b150d315cc2d4d5da
-        - COMMIT_HASH=1c61dfd1c3ad7762faa0db8b06c6af6c59cc4340
-    image: cachyos-toolchain
+        <<: *common-build-args
+        FLAVOR: kernel
+    image: kernel-toolchain
     container_name: kernel-config
     volumes:
-      - ./conf:/conf
+      - ./profiles:/profiles
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
     command:
@@ -142,28 +140,28 @@ services:
         mkdir -p /build/linux-cachyos
         cp -a /src/. /build/linux-cachyos/
         cd /build/linux-cachyos/linux-cachyos
-        chown -R builder:builder /conf /build
+        chown -R builder:builder /profiles /build
         su builder -c "
           updpkgsums
           makepkg -o
           cd /build/linux-cachyos/linux-cachyos/src/cachyos-*/
-          cp /build/linux-cachyos/linux-cachyos/config-*-cachyos-lto-afdo-propeller .config
+          cp /build/linux-cachyos/linux-cachyos/config-*-eevdf-lto-afdo-propeller .config
           LLVM=1 LLVM_IAS=1 make menuconfig
-          cp .config /conf/
+          cp .config /profiles/
         "
 
   kernel-builder:
     build:
       context: .
-      dockerfile: Dockerfile.cachyos
+      dockerfile: dockerfiles/Dockerfile.kernel
       args:
-        - ARCH_IMAGE_DIGEST=sha256:5ba8bb318666baef4d33afefc0e65db80f38b23503cb8e7b150d315cc2d4d5da
-        - COMMIT_HASH=1c61dfd1c3ad7762faa0db8b06c6af6c59cc4340
-    image: cachyos-toolchain
+        <<: *common-build-args
+        FLAVOR: kernel
+    image: kernel-toolchain
     container_name: kernel-builder
     volumes:
       - ./out:/out
-      - ./conf/.config:/tmp/.config:ro
+      - ./profiles/.config:/profiles/.config
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
     command:
@@ -174,7 +172,7 @@ services:
         mkdir -p /build/linux-cachyos
         cp -a /src/. /build/linux-cachyos/
         cd /build/linux-cachyos/linux-cachyos
-        cp /tmp/.config config
+        cp /profiles/.config config
         chown -R builder:builder /out /build
         su builder -c "
           updpkgsums

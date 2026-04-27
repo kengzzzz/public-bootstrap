@@ -52,11 +52,11 @@
 
 # Prepare Installation
 
-- update `/etc/mkinitcpio.d/linux-cachyos-lto-afdo-propeller.preset` add `default_options="-S autodetect"`
+- update `/etc/mkinitcpio.d/linux-eevdf-lto-afdo-propeller.preset` add `default_options="-S autodetect"`
 
 # Installation
 
-- `sudo pacman -U --overwrite '*' ./out/linux-cachyos-lto-afdo-propeller*.pkg.tar.zst`
+- `sudo pacman -U --overwrite '*' ./out/linux-eevdf-lto-afdo-propeller*.pkg.tar.zst`
 
 # Clean up profiler
 
