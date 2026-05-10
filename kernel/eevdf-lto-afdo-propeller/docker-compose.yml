@@ -17,26 +17,14 @@ services:
     image: kernel-autofdo
     container_name: kernel-autofdo
     volumes:
+      - ./scripts:/scripts:ro
       - ./out:/out
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
     command:
       - bash
-      - -c
-      - |
-        set -euo pipefail
-        mkdir -p /build/linux-cachyos /out/autofdo
-        cp -a /src/. /build/linux-cachyos/
-        cd /build/linux-cachyos/linux-cachyos
-        chown -R builder:builder /build /out
-        su builder -c "
-          updpkgsums
-          makepkg -o
-          cp /build/linux-cachyos/linux-cachyos/config-*-cachyos config
-          updpkgsums
-          makepkg -s --noconfirm --skippgpcheck
-          cp -v *.pkg.tar.zst /out/autofdo/
-        "
+      - /scripts/build-cachyos-package.sh
+      - autofdo
 
   autofdo:
     build:
@@ -49,20 +37,14 @@ services:
     privileged: true
     pid: "host"
     volumes:
+      - ./scripts:/scripts:ro
       - ./profiles:/profiles
       - ./out:/out
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
     command:
       - bash
-      - -c
-      - |
-        set -euo pipefail
-        cd /build
-        perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009 -o kernel.data sleep 1200
-        mkdir -p extract_dbg
-        tar --use-compress-program=zstd -xvf /out/autofdo/linux-cachyos-dbg-*.pkg.tar.zst -C extract_dbg
-        llvm-profgen --kernel --binary=extract_dbg/usr/src/debug/linux-cachyos/vmlinux --perfdata=kernel.data -o /profiles/kernel.afdo
+      - /scripts/generate-autofdo-profile.sh
 
   kernel-propeller:
     build:
@@ -74,26 +56,14 @@ services:
     image: kernel-propeller
     container_name: kernel-propeller
     volumes:
+      - ./scripts:/scripts:ro
       - ./out:/out
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
     command:
       - bash
-      - -c
-      - |
-        set -euo pipefail
-        mkdir -p /build/linux-cachyos /out/propeller
-        cp -a /src/. /build/linux-cachyos/
-        cd /build/linux-cachyos/linux-cachyos
-        chown -R builder:builder /build /out
-        su builder -c "
-          updpkgsums
-          makepkg -o
-          cp /build/linux-cachyos/linux-cachyos/config-*-cachyos config
-          updpkgsums
-          makepkg -s --noconfirm --skippgpcheck
-          cp -v *.pkg.tar.zst /out/propeller/
-        "
+      - /scripts/build-cachyos-package.sh
+      - propeller
 
   propeller:
     build:
@@ -106,20 +76,14 @@ services:
     privileged: true
     pid: "host"
     volumes:
+      - ./scripts:/scripts:ro
       - ./profiles:/profiles
       - ./out:/out
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
     command:
       - bash
-      - -c
-      - |
-        set -euo pipefail
-        cd /build
-        perf record --pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k -a -N -b -c 500009 -o kernel.data sleep 1200
-        mkdir -p extract_dbg
-        tar --use-compress-program=zstd -xvf /out/autofdo/linux-cachyos-dbg-*.pkg.tar.zst -C extract_dbg
-        generate_propeller_profiles --binary=extract_dbg/usr/src/debug/linux-cachyos/vmlinux --profile=kernel.data --cc_profile=/profiles/propeller_cc_profile.txt --ld_profile=/profiles/propeller_ld_profile.txt        
+      - /scripts/generate-propeller-profile.sh
 
   kernel-config:
     build:
@@ -131,27 +95,13 @@ services:
     image: kernel-toolchain
     container_name: kernel-config
     volumes:
+      - ./scripts:/scripts:ro
       - ./patches:/patches
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
     command:
       - bash
-      - -c
-      - |
-        set -euo pipefail
-        mkdir -p /build/linux-cachyos
-        cp -a /src/. /build/linux-cachyos/
-        cd /build/linux-cachyos/linux-cachyos
-        chown -R builder:builder /patches /build
-        su builder -c "
-          updpkgsums
-          makepkg -o
-          cd /build/linux-cachyos/linux-cachyos/src/cachyos-*/
-          cp /build/linux-cachyos/linux-cachyos/config-*-eevdf-lto-afdo-propeller .config
-          LLVM=1 LLVM_IAS=1 make menuconfig
-          diff -u --label .config --label .config /build/linux-cachyos/linux-cachyos/config-*-eevdf-lto-afdo-propeller .config > config.patch
-          cp config.patch /patches/
-        "
+      - /scripts/generate-config-patch.sh
 
   kernel-builder:
     build:
@@ -163,25 +113,11 @@ services:
     image: kernel-toolchain
     container_name: kernel-builder
     volumes:
+      - ./scripts:/scripts:ro
       - ./out:/out
       - ./patches/config.patch:/patches/config.patch:ro
     tmpfs:
       - /build:rw,exec,size=64G,mode=1777
     command:
       - bash
-      - -c
-      - |
-        set -euo pipefail
-        mkdir -p /build/linux-cachyos
-        cp -a /src/. /build/linux-cachyos/
-        cd /build/linux-cachyos/linux-cachyos
-        chown -R builder:builder /out /build
-        su builder -c "
-          updpkgsums
-          makepkg -o
-          mv config-*-eevdf-lto-afdo-propeller config
-          patch config < /patches/config.patch
-          updpkgsums
-          makepkg -s --noconfirm --skippgpcheck
-          cp -v *.pkg.tar.zst /out/
-        "
+      - /scripts/build-custom-kernel.sh
