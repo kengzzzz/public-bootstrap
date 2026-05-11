@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BENCH_DIR="${ROOT_DIR}/benchmark"
 RESULTS_DIR="${BENCH_DIR}/results"
 MODEL_ROOT="${ROOT_DIR}/models"
-COMPOSE_FILE="${ROOT_DIR}/docker-compose.yml"
-COMPOSE_SERVICE="llama-server"
+DEFAULT_COMPOSE_FILE="docker-compose.yml"
+DEFAULT_COMPOSE_SERVICE="llama-server"
 DEFAULT_BASELINE_IMAGE="ghcr.io/ggml-org/llama.cpp:full-cuda13"
 DEFAULT_CANDIDATE_IMAGE="llama-server"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -34,6 +34,10 @@ set +a
 BASELINE_IMAGE="${BENCHMARK_BASELINE_IMAGE:-${DEFAULT_BASELINE_IMAGE}}"
 CANDIDATE_IMAGE="${BENCHMARK_CANDIDATE_IMAGE:-${DEFAULT_CANDIDATE_IMAGE}}"
 BENCH_PORT="${LLAMA_ARG_PORT:-8080}"
+
+COMPOSE_FILE="${BENCHMARK_COMPOSE_FILE:-${DEFAULT_COMPOSE_FILE}}"
+[[ "${COMPOSE_FILE}" = /* ]] || COMPOSE_FILE="${ROOT_DIR}/${COMPOSE_FILE}"
+COMPOSE_SERVICE="${BENCHMARK_COMPOSE_SERVICE:-${DEFAULT_COMPOSE_SERVICE}}"
 
 if [[ -z "${LLAMA_ARG_HF_REPO:-}" ]]; then
   echo "LLAMA_ARG_HF_REPO must be set in ${ENV_FILE}" >&2
@@ -143,9 +147,13 @@ bench_image() {
 
   wait_for_server "http://127.0.0.1:${BENCH_PORT}"
 
+  nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits > "${RESULTS_DIR}/${tag}-vram-used.txt"
+
   "${BENCH_DIR}/mtp-bench.py" \
     --url "http://127.0.0.1:${BENCH_PORT}" \
     --out "${RESULTS_DIR}/${tag}.json"
+
+  nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits > "${RESULTS_DIR}/${tag}-vram-peak.txt"
 
   docker stop "${cid}" >/dev/null 2>&1
   trap - EXIT
@@ -188,6 +196,17 @@ gpu_line = load_text(results_dir / "gpu.txt")
 arch = load_text(results_dir / "arch.txt")
 threads = load_text(results_dir / "threads.txt")
 
+def load_vram(tag, suffix):
+    p = results_dir / f"{tag}-vram-{suffix}.txt"
+    if p.exists():
+        return int(p.read_text().strip().split(",")[0])
+    return None
+
+baseline_vram_used = load_vram("baseline", "used")
+candidate_vram_used = load_vram("candidate", "used")
+baseline_vram_peak = load_vram("baseline", "peak")
+candidate_vram_peak = load_vram("candidate", "peak")
+
 def get_label(insp, key):
     return (insp.get("Config", {}).get("Labels") or {}).get(key, "")
 
@@ -226,6 +245,8 @@ lines = [
     f"- Host: `{arch}`",
     f"- CPU threads: `{threads}`",
     f"- GPU: `{gpu_line}`",
+    *([f"- Baseline VRAM (used/peak): `{baseline_vram_used}` / `{baseline_vram_peak}` MiB"] if baseline_vram_used is not None else []),
+    *([f"- Candidate VRAM (used/peak): `{candidate_vram_used}` / `{candidate_vram_peak}` MiB"] if candidate_vram_used is not None else []),
     f"- Model: `{model_path}`",
     f"- Baseline image: `{image_ref(baseline_inspect)}`",
     f"- Baseline image revision: `{get_label(baseline_inspect, 'org.opencontainers.image.revision') or 'not labeled'}`",
