@@ -2,179 +2,222 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORKSPACE_DIR="${ROOT_DIR}/workspace"
-RESULTS_DIR="${WORKSPACE_DIR}/results"
+BENCH_DIR="${ROOT_DIR}/benchmark"
+RESULTS_DIR="${BENCH_DIR}/results"
 MODEL_ROOT="${ROOT_DIR}/models"
-LOCAL_IMAGE="local/llama-bench:latest"
-OFFICIAL_IMAGE="ghcr.io/ggml-org/llama.cpp:full-cuda13"
-BASE_CUDA_DEV_CONTAINER="nvidia/cuda@sha256:44a9504c6dfb50b1241464241b02a93871928f373de6f5a644cf5fe9f080aa63"
-LLAMA_CPP_REPO="https://github.com/ggml-org/llama.cpp.git"
-LLAMA_CPP_COMMIT="389ff61d77b5c71cec0cf92fe4e5d01ace80b797"
-CUDA_ARCH="89-real"
-CUDA_COMPRESSION_MODE="speed"
-THREADS="$(nproc)"
+COMPOSE_FILE="${ROOT_DIR}/docker-compose.yml"
+COMPOSE_SERVICE="llama-server"
+DEFAULT_BASELINE_IMAGE="ghcr.io/ggml-org/llama.cpp:full-cuda13"
+DEFAULT_CANDIDATE_IMAGE="llama-server"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+THREADS="$(nproc)"
 
-mkdir -p "${RESULTS_DIR}"
+resolve_env_file() {
+  local env_ref="${LLAMA_ENV_FILE:-.env}"
+  if [[ "${env_ref}" = /* ]]; then
+    printf '%s\n' "${env_ref}"
+  else
+    printf '%s\n' "${ROOT_DIR}/${env_ref}"
+  fi
+}
 
-MODEL_PATH_REL="$(
-  find -L "${MODEL_ROOT}/hf-home/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots" \
-    -name 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' \
-    | sort \
-    | head -n 1 \
-    | sed "s#^${ROOT_DIR}/##"
-)"
-if [[ -z "${MODEL_PATH_REL}" ]]; then
-    echo "model file not found under ${MODEL_ROOT}" >&2
-    exit 1
+ENV_FILE="$(resolve_env_file)"
+if [[ ! -f "${ENV_FILE}" ]]; then
+  echo "env file not found: ${ENV_FILE}" >&2
+  exit 1
+fi
+
+set -a
+source "${ENV_FILE}"
+set +a
+
+BASELINE_IMAGE="${BENCHMARK_BASELINE_IMAGE:-${DEFAULT_BASELINE_IMAGE}}"
+CANDIDATE_IMAGE="${BENCHMARK_CANDIDATE_IMAGE:-${DEFAULT_CANDIDATE_IMAGE}}"
+BENCH_PORT="${LLAMA_ARG_PORT:-8080}"
+
+if [[ -z "${LLAMA_ARG_HF_REPO:-}" ]]; then
+  echo "LLAMA_ARG_HF_REPO must be set in ${ENV_FILE}" >&2
+  exit 1
+fi
+
+if [[ "${LLAMA_ARG_HOST:-0.0.0.0}" != "0.0.0.0" ]]; then
+  echo "benchmark requires LLAMA_ARG_HOST=0.0.0.0 in ${ENV_FILE}" >&2
+  exit 1
+fi
+
+hf_repo_spec="${LLAMA_ARG_HF_REPO%%:*}"
+hf_variant=""
+if [[ "${LLAMA_ARG_HF_REPO}" == *:* ]]; then
+  hf_variant="${LLAMA_ARG_HF_REPO#*:}"
+fi
+
+hf_org="${hf_repo_spec%%/*}"
+hf_repo="${hf_repo_spec#*/}"
+model_snapshot_dir="${MODEL_ROOT}/hf-home/hub/models--${hf_org}--${hf_repo}/snapshots"
+
+if [[ ! -d "${model_snapshot_dir}" ]]; then
+  echo "model snapshot dir not found: ${model_snapshot_dir}" >&2
+  echo "download the model first so the benchmark can reuse the same LLAMA_ARG_HF_REPO config" >&2
+  exit 1
+fi
+
+model_pattern='*.gguf'
+if [[ -n "${hf_variant}" ]]; then
+  model_pattern="*${hf_variant}*.gguf"
+fi
+
+mapfile -t model_candidates < <(find -L "${model_snapshot_dir}" -type f -name "${model_pattern}" | sort)
+if [[ ${#model_candidates[@]} -eq 0 && -n "${hf_variant}" ]]; then
+  mapfile -t model_candidates < <(find -L "${model_snapshot_dir}" -type f -name '*.gguf' | sort)
+fi
+
+if [[ ${#model_candidates[@]} -eq 0 ]]; then
+  echo "no GGUF model found under ${model_snapshot_dir}" >&2
+  exit 1
+fi
+
+MODEL_PATH_ABS="${model_candidates[0]}"
+MODEL_PATH_REL="${MODEL_PATH_ABS#${ROOT_DIR}/}"
+if [[ "${MODEL_PATH_REL}" == "${MODEL_PATH_ABS}" ]]; then
+  echo "model path is outside root dir: ${MODEL_PATH_ABS}" >&2
+  exit 1
 fi
 MODEL_PATH_IN_CONTAINER="/${MODEL_PATH_REL}"
 
-docker build \
-  -f "${WORKSPACE_DIR}/Dockerfile.bench" \
-  -t "${LOCAL_IMAGE}" \
-  --build-arg "BASE_CUDA_DEV_CONTAINER=${BASE_CUDA_DEV_CONTAINER}" \
-  --build-arg "LLAMA_CPP_REPO=${LLAMA_CPP_REPO}" \
-  --build-arg "LLAMA_CPP_COMMIT=${LLAMA_CPP_COMMIT}" \
-  --build-arg "CUDA_ARCH=${CUDA_ARCH}" \
-  --build-arg "CUDA_COMPRESSION_MODE=${CUDA_COMPRESSION_MODE}" \
-  "${ROOT_DIR}"
+mkdir -p "${RESULTS_DIR}"
 
-docker pull "${OFFICIAL_IMAGE}"
+# ---- build images ----
+docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" build "${COMPOSE_SERVICE}"
+docker pull "${BASELINE_IMAGE}"
 
-docker inspect "${LOCAL_IMAGE}" > "${RESULTS_DIR}/local-image.inspect.json"
-docker inspect "${OFFICIAL_IMAGE}" > "${RESULTS_DIR}/official-image.inspect.json"
+# ---- inspect ----
+docker inspect "${BASELINE_IMAGE}" > "${RESULTS_DIR}/baseline-image.inspect.json"
+docker inspect "${CANDIDATE_IMAGE}" > "${RESULTS_DIR}/candidate-image.inspect.json"
+
+# ---- server + bench helpers ----
+SERVER_ARGS=(
+  -m "${MODEL_PATH_IN_CONTAINER}"
+)
 
 COMMON_DOCKER_ARGS=(
   --rm
   --gpus all
   --ipc host
-  --user "$(id -u):$(id -g)"
-  -e "LD_LIBRARY_PATH=/app:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+  -p "${BENCH_PORT}:${BENCH_PORT}"
   -v "${MODEL_ROOT}:/models"
-  -w /models
+   -e "LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
 )
 
-docker run "${COMMON_DOCKER_ARGS[@]}" "${LOCAL_IMAGE}" --help > "${RESULTS_DIR}/local-help.txt"
-docker run "${COMMON_DOCKER_ARGS[@]}" --entrypoint /app/llama-bench "${OFFICIAL_IMAGE}" --help > "${RESULTS_DIR}/official-help.txt"
+while IFS= read -r var_name; do
+  if [[ "${var_name}" == "LLAMA_ARG_HF_REPO" ]]; then
+    continue
+  fi
+  COMMON_DOCKER_ARGS+=( -e "${var_name}=${!var_name}" )
+done < <(compgen -A variable LLAMA_ARG_ | sort)
 
-LOCAL_BENCH_ARGS=(
-  -m "${MODEL_PATH_IN_CONTAINER}"
-  -p 512
-  -n 128
-  -b 2048
-  -ub 512
-  -ngl 999
-  -fa 1
-  -ctk q8_0
-  -ctv q8_0
-  -ncmoe 18
-  -mmp 0
-  -t "${THREADS}"
-  -r 5
-  -o json
-  --progress
-)
+wait_for_server() {
+  local url="$1"
+  for _ in $(seq 1 90); do
+    if curl -sf "${url}/health" > /dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "server did not start within 180s" >&2
+  return 1
+}
 
-docker run "${COMMON_DOCKER_ARGS[@]}" "${LOCAL_IMAGE}" "${LOCAL_BENCH_ARGS[@]}" > "${RESULTS_DIR}/local.json"
-docker run "${COMMON_DOCKER_ARGS[@]}" --entrypoint /app/llama-bench "${OFFICIAL_IMAGE}" "${LOCAL_BENCH_ARGS[@]}" > "${RESULTS_DIR}/official.json"
+bench_image() {
+  local tag="$1"
+  local image="$2"
+  local entrypoint="$3"
+  local extra_args=()
 
+  if [[ -n "${entrypoint}" ]]; then
+    extra_args+=(--entrypoint "${entrypoint}")
+  fi
+
+  local cid
+  cid="$(docker run -d "${COMMON_DOCKER_ARGS[@]}" "${extra_args[@]}" "${image}" "${SERVER_ARGS[@]}")"
+  trap "docker stop '${cid}' >/dev/null 2>&1 || true" EXIT
+
+  wait_for_server "http://127.0.0.1:${BENCH_PORT}"
+
+  "${BENCH_DIR}/mtp-bench.py" \
+    --url "http://127.0.0.1:${BENCH_PORT}" \
+    --out "${RESULTS_DIR}/${tag}.json"
+
+  docker stop "${cid}" >/dev/null 2>&1
+  trap - EXIT
+}
+
+bench_image baseline "${BASELINE_IMAGE}" /app/llama-server
+bench_image candidate "${CANDIDATE_IMAGE}" ""
+
+# ---- system info ----
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader > "${RESULTS_DIR}/gpu.txt"
 uname -m > "${RESULTS_DIR}/arch.txt"
-nproc > "${RESULTS_DIR}/threads.txt"
+printf '%s\n' "${THREADS}" > "${RESULTS_DIR}/threads.txt"
 
-python3 - "${WORKSPACE_DIR}" "${RESULTS_DIR}" "${TIMESTAMP}" "${MODEL_PATH_IN_CONTAINER}" <<'PY'
-import json
-import pathlib
-import sys
+# ---- generate summary ----
+python3 - "${BENCH_DIR}" "${RESULTS_DIR}" "${TIMESTAMP}" "${MODEL_PATH_IN_CONTAINER}" <<'PY'
+import json, os, pathlib, sys
 
-workspace_dir = pathlib.Path(sys.argv[1])
+bench_dir = pathlib.Path(sys.argv[1])
 results_dir = pathlib.Path(sys.argv[2])
 timestamp = sys.argv[3]
 model_path = sys.argv[4]
 
-def load_json(path: pathlib.Path):
-    with path.open() as fh:
-        return json.load(fh)
+def load_json(p): return json.loads(p.read_text())
+def load_text(p): return p.read_text().strip()
 
-def load_text(path: pathlib.Path) -> str:
-    return path.read_text().strip()
+def inspect_obj(data):
+    if isinstance(data, list):
+        if not data:
+            raise ValueError("docker inspect returned an empty list")
+        return data[0]
+    if isinstance(data, dict):
+        return data
+    raise TypeError(f"unexpected inspect payload type: {type(data).__name__}")
 
-local_inspect = load_json(results_dir / "local-image.inspect.json")[0]
-official_inspect = load_json(results_dir / "official-image.inspect.json")[0]
-local_results = load_json(results_dir / "local.json")
-official_results = load_json(results_dir / "official.json")
+baseline_inspect = inspect_obj(load_json(results_dir / "baseline-image.inspect.json"))
+candidate_inspect = inspect_obj(load_json(results_dir / "candidate-image.inspect.json"))
+baseline_results = load_json(results_dir / "baseline.json")
+candidate_results = load_json(results_dir / "candidate.json")
 gpu_line = load_text(results_dir / "gpu.txt")
 arch = load_text(results_dir / "arch.txt")
 threads = load_text(results_dir / "threads.txt")
 
-def get_label(inspect, key):
-    return (inspect.get("Config", {}).get("Labels") or {}).get(key, "")
+def get_label(insp, key):
+    return (insp.get("Config", {}).get("Labels") or {}).get(key, "")
 
-def image_ref(inspect):
-    repo_digests = inspect.get("RepoDigests") or []
+def image_ref(insp):
+    repo_digests = insp.get("RepoDigests") or []
     if repo_digests:
         return repo_digests[0]
-    repo_tags = inspect.get("RepoTags") or []
+    repo_tags = insp.get("RepoTags") or []
     if repo_tags:
         return repo_tags[0]
-    return inspect.get("Id", "")
+    return insp.get("Id", "")
 
-def normalize_rows(payload):
-    if isinstance(payload, dict):
-        for key in ("results", "benchmarks", "data"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                payload = value
-                break
-    if not isinstance(payload, list):
-        raise SystemExit(f"unexpected benchmark JSON shape: {type(payload)!r}")
+def results_map(data):
+    return {r["name"]: r for r in data.get("results", [])}
 
-    rows = {}
-    for row in payload:
-        test = row.get("test") or row.get("name") or ""
-        if not test:
-            n_prompt = int(row.get("n_prompt") or 0)
-            n_gen = int(row.get("n_gen") or 0)
-            if n_prompt and not n_gen:
-                test = f"pp{n_prompt}"
-            elif n_gen and not n_prompt:
-                test = f"tg{n_gen}"
-        if not test:
-            continue
-        samples_ns = row.get("samples_ns") or row.get("samples") or []
-        samples_ts = row.get("samples_ts") or []
-        avg_ns = row.get("avg_ns")
-        if avg_ns is None and samples_ns:
-            avg_ns = sum(samples_ns) / len(samples_ns)
-        if avg_ns is None:
-            raise SystemExit(f"missing avg_ns for benchmark row {row}")
-        avg_ts = row.get("avg_ts")
-        if avg_ts is None and samples_ts:
-            avg_ts = sum(samples_ts) / len(samples_ts)
-        if avg_ts is None:
-            avg_ts = 1e9 / float(avg_ns)
-        rows[test] = {
-            "avg_ns": float(avg_ns),
-            "avg_ts": float(avg_ts),
-            "samples": len(samples_ns),
-        }
-    return rows
+baseline_map = results_map(baseline_results)
+candidate_map = results_map(candidate_results)
+baseline_agg = baseline_results.get("aggregate", {})
+candidate_agg = candidate_results.get("aggregate", {})
 
-local_rows = normalize_rows(local_results)
-official_rows = normalize_rows(official_results)
+prompt_names = [r["name"] for r in baseline_results.get("results", [])]
 
-wanted = ["pp512", "tg128"]
-for name in wanted:
-    if name not in local_rows or name not in official_rows:
-        raise SystemExit(f"missing benchmark row {name}")
+def fmt_tok(v): return f"{v:,.2f} tok/s"
+def fmt_rate(v): return f"{v:.3f}" if v is not None else "n/a"
+def fmt_pct(v):
+    sign = "+" if v >= 0 else ""
+    return f"{sign}{v:.2f}%"
 
-def fmt_tps(value):
-    return f"{value:,.2f} tok/s"
-
-def fmt_pct(value):
-    sign = "+" if value >= 0 else ""
-    return f"{sign}{value:.2f}%"
+def cfg(name, default="n/a"):
+    return os.environ.get(name, default)
 
 lines = [
     "# llama.cpp benchmark summary",
@@ -184,47 +227,112 @@ lines = [
     f"- CPU threads: `{threads}`",
     f"- GPU: `{gpu_line}`",
     f"- Model: `{model_path}`",
-    f"- Local image: `{image_ref(local_inspect)}`",
-    f"- Local image revision: `{get_label(local_inspect, 'org.opencontainers.image.revision')}`",
-    f"- Official image: `{image_ref(official_inspect)}`",
-    f"- Official image revision: `{get_label(official_inspect, 'org.opencontainers.image.revision') or 'not labeled'}`",
+    f"- Baseline image: `{image_ref(baseline_inspect)}`",
+    f"- Baseline image revision: `{get_label(baseline_inspect, 'org.opencontainers.image.revision') or 'not labeled'}`",
+    f"- Candidate image: `{image_ref(candidate_inspect)}`",
+    f"- Candidate image revision: `{get_label(candidate_inspect, 'org.opencontainers.image.revision') or 'not labeled'}`",
     "",
     "## Benchmark setup",
     "",
-    "- Tool: `llama-bench`",
-    "- Prompt tokens: `512`",
-    "- Generation tokens: `128`",
-    "- Batch size: `2048`",
-    "- Micro-batch size: `512`",
-    "- GPU layers: `999`",
-    "- Flash attention: `on`",
-    "- KV cache types: `q8_0 / q8_0`",
-    "- CPU MoE threads: `18`",
-    "- mmap: `off`",
-    "- Repetitions: `5`",
+    "- Tool: `mtp-bench.py` (HTTP /completion)",
+    f"- Number of prompts: `{len(prompt_names)}`",
+    "- Predict tokens per request: `192`",
+    "- Temperature: `0.0`",
+    f"- GPU layers: `{cfg('LLAMA_ARG_N_GPU_LAYERS')}`",
+    f"- Parallel slots: `{cfg('LLAMA_ARG_N_PARALLEL')}`",
+    f"- Flash attention: `{cfg('LLAMA_ARG_FLASH_ATTN')}`",
+    f"- Context size: `{cfg('LLAMA_ARG_CTX_SIZE')}`",
+    f"- KV cache types: `{cfg('LLAMA_ARG_CACHE_TYPE_K')} / {cfg('LLAMA_ARG_CACHE_TYPE_V')}`",
+    f"- CPU MoE threads: `{cfg('LLAMA_ARG_N_CPU_MOE')}`",
+    f"- mmap: `{cfg('LLAMA_ARG_MMAP')}`",
     "",
-    "## Results",
+    "## Aggregate",
     "",
-    "| Test | Local | Official | Delta vs official |",
+    "| Metric | Baseline | Candidate | Delta |",
     "| --- | ---: | ---: | ---: |",
 ]
 
-for name in wanted:
-    local_tps = local_rows[name]["avg_ts"]
-    official_tps = official_rows[name]["avg_ts"]
-    delta_pct = ((local_tps - official_tps) / official_tps) * 100.0
-    lines.append(
-        f"| `{name}` | {fmt_tps(local_tps)} | {fmt_tps(official_tps)} | {fmt_pct(delta_pct)} |"
-    )
+def agg_metric(key, label, baseline, candidate):
+    bv = baseline.get(key)
+    cv = candidate.get(key)
+    if bv is None or cv is None:
+        return
+    if isinstance(bv, float):
+        delta = ((cv - bv) / bv) * 100.0 if bv else 0.0
+        lines.append(f"| {label} | {bv:,.2f} | {cv:,.2f} | {fmt_pct(delta)} |")
+    else:
+        delta = cv - bv
+        d_fmt = f"{delta:+d}"
+        lines.append(f"| {label} | {bv:,d} | {cv:,d} | {d_fmt} |")
+
+agg_metric("total_predicted", "Total predicted tokens", baseline_agg, candidate_agg)
+agg_metric("wall_s_total", "Total wall time (s)", baseline_agg, candidate_agg)
+
+btp = baseline_agg.get("total_predicted", 0)
+bwt = baseline_agg.get("wall_s_total", 1)
+ctp = candidate_agg.get("total_predicted", 0)
+cwt = candidate_agg.get("wall_s_total", 1)
+baseline_throughput = btp / bwt if bwt else 0.0
+candidate_throughput = ctp / cwt if cwt else 0.0
+tp_delta = ((candidate_throughput - baseline_throughput) / baseline_throughput) * 100.0 if baseline_throughput else 0.0
+lines.append(f"| Aggregate throughput | {fmt_tok(baseline_throughput)} | {fmt_tok(candidate_throughput)} | {fmt_pct(tp_delta)} |")
+
+bar = baseline_agg.get("aggregate_accept_rate")
+car = candidate_agg.get("aggregate_accept_rate")
+if bar is not None and car is not None:
+    ar_delta = car - bar
+    lines.append(f"| Aggregate accept rate | {bar:.4f} | {car:.4f} | {ar_delta:+.4f} |")
+
+lines.extend([
+    "",
+    "## Per-prompt results",
+    "",
+])
+
+show_accept_rate = any(
+    row.get("accept_rate") is not None
+    for row in list(baseline_map.values()) + list(candidate_map.values())
+)
+
+if show_accept_rate:
+    lines.extend([
+        "| Prompt | Baseline tok/s | Candidate tok/s | Delta | Baseline accept rate | Candidate accept rate |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ])
+else:
+    lines.extend([
+        "| Prompt | Baseline tok/s | Candidate tok/s | Delta |",
+        "| --- | ---: | ---: | ---: |",
+    ])
+
+for name in prompt_names:
+    br = baseline_map.get(name, {})
+    cr = candidate_map.get(name, {})
+    bt = br.get("predicted_per_second", 0)
+    ct = cr.get("predicted_per_second", 0)
+    if bt == 0:
+        d = 0.0
+    else:
+        d = ((ct - bt) / bt) * 100.0
+    ba = br.get("accept_rate")
+    ca = cr.get("accept_rate")
+    row = f"| `{name}` | {fmt_tok(bt)} | {fmt_tok(ct)} | {fmt_pct(d)} |"
+    if show_accept_rate:
+        row = f"{row} {fmt_rate(ba)} | {fmt_rate(ca)} |"
+    lines.append(row)
 
 lines.extend([
     "",
     "## Notes",
     "",
-    "- This is an inference benchmark, not a `llama-server` throughput or concurrency benchmark.",
-    "- `.env.example` settings that do not map to `llama-bench` were not applied: `LLAMA_ARG_HOST`, `LLAMA_ARG_PORT`, `LLAMA_ARG_N_PARALLEL`, `LLAMA_ARG_CTX_SIZE`.",
-    "- Raw artifacts: `workspace/results/local.json`, `workspace/results/official.json`, and both `docker inspect` outputs.",
+    "- This benchmark measures real HTTP `/completion` latency including network round-trip within the host.",
+    "- The benchmark reuses the repo env file as the single source of truth for `LLAMA_ARG_*` runtime settings.",
+    "- The candidate image is compared against the official llama.cpp image as the baseline.",
+    "- `n_predict=192`, `temperature=0.0`, `seed=42`, `cache_prompt=false` across all requests.",
+    "- Raw artifacts: `results/baseline.json`, `results/candidate.json`, and both `docker inspect` outputs.",
 ])
 
-(workspace_dir / "summary.md").write_text("\n".join(lines) + "\n")
+(bench_dir / "summary.md").write_text("\n".join(lines) + "\n")
 PY
+
+echo "done - see ${BENCH_DIR}/summary.md"

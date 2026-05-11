@@ -18,11 +18,17 @@
 - `docker compose up -d`
 - connect to the service over the Tailscale node name `llama-server:${LLAMA_ARG_PORT}`
 
+# Run Benchmark
+
+- `benchmark/run-bench.sh`
+- the benchmark reads the same env file as runtime config, derives the local GGUF from `LLAMA_ARG_HF_REPO`, and compares `BENCHMARK_CANDIDATE_IMAGE` against `BENCHMARK_BASELINE_IMAGE`
+
 # Notes
 
 - runtime services use `LLAMA_ARG_HF_REPO` from `./.env`
 - downloaded models are cached under `./models/hf-home`
 - the first run will download the model into the shared Hugging Face cache
 - runtime arguments now live in `./.env` and are passed via llama.cpp's built-in `LLAMA_ARG_*` environment support
+- benchmark image refs also live in `./.env`, so runtime and benchmark configuration stay in one place
 - `llama-server` no longer publishes a host port; it is only reachable through the Tailscale sidecar network namespace
 - the Tailscale sidecar sets `TS_ACCEPT_DNS=false`, so containers keep Docker's default DNS instead of adopting tailnet DNS settings

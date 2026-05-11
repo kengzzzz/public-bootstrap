@@ -32,22 +32,24 @@ ARG LLAMA_CPP_COMMIT
 ARG CMAKE_BUILD_PARALLEL_LEVEL
 
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
         cmake \
-        gcc-14 \
-        g++-14 \
+        clang \
         git \
+        libomp-dev \
+        libomp5 \
         libssl-dev \
-        libgomp1 \
+        lld \
         ninja-build \
         python3 && \
     rm -rf /var/lib/apt/lists/*
 
-ENV CC=gcc-14 \
-    CXX=g++-14 \
-    CUDAHOSTCXX=g++-14
+ENV CC=clang \
+    CXX=clang++ \
+    CUDAHOSTCXX=clang++
 
 WORKDIR /src/llama.cpp
 COPY --from=source /src/llama.cpp/ ./
@@ -65,6 +67,7 @@ RUN set -euo pipefail; \
       -DGGML_CUDA_CUB_3DOT2=ON \
       -DGGML_CUDA_NCCL=OFF \
       -DGGML_CUDA_COMPRESSION_MODE="${CUDA_COMPRESSION_MODE}" \
+      -DGGML_LTO=OFF \
       -DGGML_BACKEND_DL=OFF \
       -DGGML_CPU_ALL_VARIANTS=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
@@ -78,8 +81,9 @@ RUN /scripts/package-app.sh build-server llama-server /out/server "${LLAMA_CPP_C
 FROM build AS rootfs
 
 RUN set -euo pipefail; \
-    mkdir -p /server-rootfs/app /server-rootfs/tmp /server-rootfs/etc/ssl/certs /server-rootfs/meta; \
-    cp -a /out/server/app/. /server-rootfs/app/; \
+    mkdir -p /server-rootfs/usr/local/bin /server-rootfs/usr/local/lib /server-rootfs/tmp /server-rootfs/etc/ssl/certs /server-rootfs/meta; \
+    cp -a /out/server/app/llama-server /server-rootfs/usr/local/bin/; \
+    find /out/server/app -maxdepth 1 -name '*.so*' -exec cp -a {} /server-rootfs/usr/local/lib/ \; && \
     cp -a /out/server/meta/. /server-rootfs/meta/; \
     cp -a /etc/ssl/certs/ca-certificates.crt /server-rootfs/etc/ssl/certs/; \
     printf 'llama:x:1000:1000:llama:/nonexistent:/sbin/nologin\n' > /server-rootfs/etc/passwd; \
@@ -90,18 +94,16 @@ RUN set -euo pipefail; \
 FROM scratch AS server
 
 ARG LLAMA_CPP_COMMIT
-ARG CUDA_ARCH=89-real
-ARG CUDA_COMPRESSION_MODE=speed
+ARG CUDA_ARCH
+ARG CUDA_COMPRESSION_MODE
 
 COPY --from=rootfs /server-rootfs/ /
-
-WORKDIR /app
 
 ENV LLAMA_ARG_HOST=0.0.0.0 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
-    LD_LIBRARY_PATH=/app:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64 \
-    PATH=/app
+    LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 LABEL org.opencontainers.image.source="https://github.com/ggml-org/llama.cpp" \
       org.opencontainers.image.revision="${LLAMA_CPP_COMMIT}" \
@@ -110,4 +112,4 @@ LABEL org.opencontainers.image.source="https://github.com/ggml-org/llama.cpp" \
       org.ggml.llama.mode="server"
 
 USER 1000:1000
-ENTRYPOINT ["/app/llama-server"]
+ENTRYPOINT ["llama-server"]

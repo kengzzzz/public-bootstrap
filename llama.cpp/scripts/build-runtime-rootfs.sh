@@ -27,8 +27,8 @@ resolve_lib() {
 
   local dir
   for dir in \
-    "${root_dir}/app" \
-    /app \
+    "${root_dir}/usr/local/lib" \
+    /usr/local/lib \
     /usr/local/cuda/lib64 \
     /usr/local/nvidia/lib64 \
     /usr/local/nvidia/lib \
@@ -54,7 +54,8 @@ resolve_lib() {
 }
 
 : > "$queue_file"
-find "${root_dir}/app" -maxdepth 1 -type f \( -perm /111 -o -name '*.so*' \) -print > "$queue_file"
+find "${root_dir}/usr/local/bin" -maxdepth 1 -type f -print > "$queue_file" 2>/dev/null || true
+find "${root_dir}/usr/local/lib" -maxdepth 1 -type f -name '*.so*' -print >> "$queue_file" 2>/dev/null || true
 : > "$seen_file"
 : > "$runtime_needed_file"
 rm -f "$unresolved_file"
