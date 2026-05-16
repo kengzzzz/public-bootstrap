@@ -26,11 +26,6 @@ FROM ${BASE_CUDA_DEV_CONTAINER} AS build-base
 
 SHELL ["/bin/bash", "-lc"]
 
-ARG CUDA_ARCH
-ARG CUDA_COMPRESSION_MODE
-ARG LLAMA_CPP_COMMIT
-ARG CMAKE_BUILD_PARALLEL_LEVEL
-
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
@@ -57,6 +52,18 @@ COPY scripts/ /scripts/
 
 FROM build-base AS build
 
+ARG CUDA_ARCH
+ARG CUDA_COMPRESSION_MODE
+ARG LLAMA_CPP_COMMIT
+ARG CMAKE_BUILD_PARALLEL_LEVEL
+ARG GGML_CUDA_FA
+ARG GGML_CUDA_FA_ALL_QUANTS
+ARG GGML_CUDA_GRAPHS
+ARG GGML_CUDA_PEER_MAX_BATCH_SIZE
+ARG GGML_CUDA_FORCE_MMQ
+ARG GGML_CUDA_FORCE_CUBLAS
+ARG GGML_LTO
+
 RUN set -euo pipefail; \
     cmake -S . -B build-server -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
@@ -67,7 +74,13 @@ RUN set -euo pipefail; \
       -DGGML_CUDA_CUB_3DOT2=ON \
       -DGGML_CUDA_NCCL=OFF \
       -DGGML_CUDA_COMPRESSION_MODE="${CUDA_COMPRESSION_MODE}" \
-      -DGGML_LTO=OFF \
+      -DGGML_CUDA_FA="${GGML_CUDA_FA}" \
+      -DGGML_CUDA_FA_ALL_QUANTS="${GGML_CUDA_FA_ALL_QUANTS}" \
+      -DGGML_CUDA_GRAPHS="${GGML_CUDA_GRAPHS}" \
+      -DGGML_CUDA_PEER_MAX_BATCH_SIZE="${GGML_CUDA_PEER_MAX_BATCH_SIZE}" \
+      -DGGML_CUDA_FORCE_MMQ="${GGML_CUDA_FORCE_MMQ}" \
+      -DGGML_CUDA_FORCE_CUBLAS="${GGML_CUDA_FORCE_CUBLAS}" \
+      -DGGML_LTO="${GGML_LTO}" \
       -DGGML_BACKEND_DL=OFF \
       -DGGML_CPU_ALL_VARIANTS=OFF \
       -DLLAMA_BUILD_TESTS=OFF \
@@ -96,6 +109,13 @@ FROM scratch AS server
 ARG LLAMA_CPP_COMMIT
 ARG CUDA_ARCH
 ARG CUDA_COMPRESSION_MODE
+ARG GGML_CUDA_FA
+ARG GGML_CUDA_FA_ALL_QUANTS
+ARG GGML_CUDA_GRAPHS
+ARG GGML_CUDA_PEER_MAX_BATCH_SIZE
+ARG GGML_CUDA_FORCE_MMQ
+ARG GGML_CUDA_FORCE_CUBLAS
+ARG GGML_LTO
 
 COPY --from=rootfs /server-rootfs/ /
 
@@ -109,6 +129,13 @@ LABEL org.opencontainers.image.source="https://github.com/ggml-org/llama.cpp" \
       org.opencontainers.image.revision="${LLAMA_CPP_COMMIT}" \
       org.ggml.llama.cuda.arch="${CUDA_ARCH}" \
       org.ggml.llama.cuda.compression_mode="${CUDA_COMPRESSION_MODE}" \
+      org.ggml.llama.cuda.fa="${GGML_CUDA_FA}" \
+      org.ggml.llama.cuda.fa_all_quants="${GGML_CUDA_FA_ALL_QUANTS}" \
+      org.ggml.llama.cuda.graphs="${GGML_CUDA_GRAPHS}" \
+      org.ggml.llama.cuda.peer_max_batch_size="${GGML_CUDA_PEER_MAX_BATCH_SIZE}" \
+      org.ggml.llama.cuda.force_mmq="${GGML_CUDA_FORCE_MMQ}" \
+      org.ggml.llama.cuda.force_cublas="${GGML_CUDA_FORCE_CUBLAS}" \
+      org.ggml.llama.lto="${GGML_LTO}" \
       org.ggml.llama.mode="server"
 
 USER 1000:1000
